@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.0.0 (2026-02-17)
+
+
+### Bug Fixes
+
+* tests pipeline ([9e612ed](https://github.com/apinator-io/sdk-swift/commit/9e612ed100a45b89c2c51c1befa34d7c05b9e8d7))
+
 ## [1.0.0](https://github.com/apinator-io/sdk-swift/releases/tag/v1.0.0) (2026-02-17)
 
 ### Features
