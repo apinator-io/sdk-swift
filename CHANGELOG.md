@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.0](https://github.com/apinator-io/sdk-swift/compare/v1.0.0...v1.1.0) (2026-10-13)
+
+
+### Features
+
+* make reconnect and keep-alive actually run; honor activityTimeout ([64a92e8](https://github.com/apinator-io/sdk-swift/commit/64a92e8e84db45a6840afcfc4ce9d6c660252d49))
+
 ## 1.0.0 (2026-02-17)
 
 
