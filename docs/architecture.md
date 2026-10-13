@@ -24,7 +24,7 @@ initialized ──connect()──> connecting ──onopen+established──> co
                                 │                                  ↓
                                 └──reconnect delay──── connecting (retry)
                                                            │
-                                                     max attempts
+                                         maxReconnectAttempts (if set)
                                                            ↓
                                                       unavailable
 
@@ -33,9 +33,9 @@ Any state ──disconnect()──> disconnected (terminal, no reconnect)
 
 ## Reconnection Strategy
 
-- Exponential backoff: `min(1.0 * 2^attempt, 30.0)` seconds
-- Default max attempts: 6 (configurable via `maxReconnectAttempts`)
-- Reconnection resets on successful connection
+- Exponential backoff: `min(1.0 * 2^attempt, 30.0)` seconds, jittered to 50–100% so clients dropped together don't reconnect in lockstep
+- Retries indefinitely by default; set `maxReconnectAttempts` to give up and go `unavailable`, or `enableReconnect: false` to disable
+- The attempt counter resets once the server sends `connection_established`
 - On reconnect, all existing channel subscriptions are automatically re-sent
 
 ## Channel Management
@@ -69,10 +69,16 @@ All WebSocket frames are JSON text:
 
 ## Activity Timeout / Keep-alive
 
-1. Server sends `activity_timeout` in the connection established message
-2. Client starts a timer for that duration
+1. Server sends `activity_timeout` in the connection established message; the `activityTimeout` option overrides it
+2. Client starts a timer for that duration, restarted by every message from the server
 3. On timeout, client sends `realtime:ping`
-4. If no `realtime:pong` within 30s, connection is closed and reconnect begins
+4. If nothing arrives within `pongTimeout` (default 30s), the socket is dropped and reconnect begins
+
+## Threading
+
+`Connection` keeps all state on a private serial queue and uses GCD timers on that queue. URLSession delivers socket callbacks on background threads that have no run loop, so `Timer.scheduledTimer` would never fire there. `onMessage` and `onStateChange` (and therefore `Apinator` bindings) are called on that queue, not the main thread.
+
+Each connection attempt gets its own `URLSessionTransport`, which invalidates its `URLSession` on close. Callbacks from a socket that has been replaced are ignored.
 
 ## Design Principles
 

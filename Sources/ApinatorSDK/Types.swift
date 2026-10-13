@@ -5,8 +5,15 @@ public struct RealtimeOptions {
     public let cluster: String
     public var authEndpoint: String?
     public var authHeaders: [String: String]?
-    public var activityTimeout: TimeInterval
+    /// Seconds without any server message before the client sends a ping.
+    /// `nil` uses the server-provided value (120s by default).
+    public var activityTimeout: TimeInterval?
+    /// Seconds to wait for a reply to that ping before reconnecting.
+    public var pongTimeout: TimeInterval
+    /// Reconnect automatically after an unexpected disconnect.
     public var enableReconnect: Bool
+    /// Consecutive failed reconnect attempts before giving up and moving to
+    /// `.unavailable`. Unlimited by default.
     public var maxReconnectAttempts: Int
 
     public init(
@@ -14,15 +21,17 @@ public struct RealtimeOptions {
         cluster: String,
         authEndpoint: String? = nil,
         authHeaders: [String: String]? = nil,
-        activityTimeout: TimeInterval = 120,
+        activityTimeout: TimeInterval? = nil,
+        pongTimeout: TimeInterval = 30,
         enableReconnect: Bool = true,
-        maxReconnectAttempts: Int = 6
+        maxReconnectAttempts: Int = .max
     ) {
         self.appKey = appKey
         self.cluster = cluster
         self.authEndpoint = authEndpoint
         self.authHeaders = authHeaders
         self.activityTimeout = activityTimeout
+        self.pongTimeout = pongTimeout
         self.enableReconnect = enableReconnect
         self.maxReconnectAttempts = maxReconnectAttempts
     }
