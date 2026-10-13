@@ -1,198 +1,239 @@
 import Foundation
 
+/// WebSocket lifecycle: connect, keep-alive, and reconnect.
+///
+/// All mutable state lives on a private serial queue and every timer is a GCD
+/// timer on that queue, so nothing depends on a run loop: URLSession delivers
+/// callbacks on background threads, where `Timer.scheduledTimer` never fires.
+/// `onMessage` and `onStateChange` are called on that queue.
 public class Connection: NSObject {
-    private var ws: URLSessionWebSocketTask?
-    private var session: URLSession?
-    private(set) var state: ConnectionState = .initialized
+    private static let defaultActivityTimeout: TimeInterval = 120
+    private static let maxReconnectDelay: TimeInterval = 30
+
+    private let queue = DispatchQueue(label: "io.apinator.connection")
+    private let queueKey = DispatchSpecificKey<Void>()
+
+    private var transport: WebSocketTransport?
+    private var _state: ConnectionState = .initialized
+    private var _socketId: String?
     private let options: RealtimeOptions
+    private let makeTransport: (URL) -> WebSocketTransport
     private var onMessage: ((Message) -> Void)?
     private var onStateChange: ((ConnectionState, ConnectionState) -> Void)?
     private var reconnectAttempts = 0
-    private var reconnectTimer: Timer?
-    private var activityTimer: Timer?
-    private var pongTimer: Timer?
-    private(set) var socketId: String?
+    private var activityTimeout = Connection.defaultActivityTimeout
+    private var reconnectTimer: DispatchWorkItem?
+    private var activityTimer: DispatchWorkItem?
+    private var pongTimer: DispatchWorkItem?
 
-    init(
+    /// Base delay before the first reconnect attempt; lowered by tests.
+    var reconnectBaseDelay: TimeInterval = 1
+
+    var state: ConnectionState { onQueue { _state } }
+    var socketId: String? { onQueue { _socketId } }
+
+    convenience init(
         options: RealtimeOptions,
         onMessage: @escaping (Message) -> Void,
         onStateChange: @escaping (ConnectionState, ConnectionState) -> Void
     ) {
+        self.init(
+            options: options,
+            onMessage: onMessage,
+            onStateChange: onStateChange,
+            makeTransport: { URLSessionTransport(url: $0) }
+        )
+    }
+
+    init(
+        options: RealtimeOptions,
+        onMessage: @escaping (Message) -> Void,
+        onStateChange: @escaping (ConnectionState, ConnectionState) -> Void,
+        makeTransport: @escaping (URL) -> WebSocketTransport
+    ) {
         self.options = options
         self.onMessage = onMessage
         self.onStateChange = onStateChange
+        self.makeTransport = makeTransport
         super.init()
+        queue.setSpecific(key: queueKey, value: ())
     }
 
     func connect() {
-        guard state == .initialized || state == .disconnected || state == .unavailable else {
-            return
-        }
+        onQueue { self.openSocket() }
+    }
 
-        clearTimers()
-        setState(.connecting)
+    func disconnect() {
+        onQueue {
+            self.clearTimers()
+            self.reconnectAttempts = 0
+            self.setState(.disconnected)
+            self.closeSocket()
+        }
+    }
+
+    func send(_ message: Message) {
+        onQueue {
+            guard self._state == .connected else { return }
+            self.write(message)
+        }
+    }
+
+    // MARK: - Queue-confined internals
+
+    /// Runs `work` on the connection queue, inline if already on it (callbacks
+    /// re-enter, e.g. resubscribing from inside `onStateChange`).
+    private func onQueue<T>(_ work: () -> T) -> T {
+        if DispatchQueue.getSpecific(key: queueKey) != nil {
+            return work()
+        }
+        return queue.sync(execute: work)
+    }
+
+    private func openSocket() {
+        // A socket is already open or opening.
+        guard transport == nil else { return }
+
+        // An explicit connect() while a reconnect is pending connects right away.
+        reconnectTimer?.cancel()
+        reconnectTimer = nil
 
         let host = resolveWSHost()
-        let urlString = "\(host)/app/\(options.appKey)?protocol=7&client=swift&version=1.0.0"
-
-        guard let url = URL(string: urlString) else {
+        guard let url = URL(string: "\(host)/app/\(options.appKey)?protocol=7&client=swift&version=1.0.0") else {
             setState(.unavailable)
             return
         }
 
-        let session = URLSession(configuration: .default, delegate: self, delegateQueue: nil)
-        self.session = session
+        setState(.connecting)
 
-        let ws = session.webSocketTask(with: url)
-        self.ws = ws
-        ws.resume()
-
-        receiveMessage()
-    }
-
-    func disconnect() {
-        clearTimers()
-        reconnectAttempts = 0
-        setState(.disconnected)
-        ws?.cancel(with: .normalClosure, reason: nil)
-        ws = nil
-        session?.invalidateAndCancel()
-        session = nil
-        socketId = nil
-    }
-
-    func send(_ message: Message) {
-        guard state == .connected else {
-            return
-        }
-
-        do {
-            let data = try JSONEncoder().encode(message)
-            guard let string = String(data: data, encoding: .utf8) else {
-                return
-            }
-
-            let wsMessage = URLSessionWebSocketTask.Message.string(string)
-            ws?.send(wsMessage) { error in
-                if let error = error {
-                    print("WebSocket send error: \(error)")
+        let transport = makeTransport(url)
+        self.transport = transport
+        // Callbacks from a socket that has since been replaced are ignored, so a
+        // late close from an old socket can't tear down the current one.
+        transport.start(
+            onText: { [weak self, weak transport] text in
+                self?.queue.async {
+                    guard let self = self, let transport = transport, self.transport === transport else { return }
+                    self.handleText(text)
+                }
+            },
+            onClose: { [weak self, weak transport] in
+                self?.queue.async {
+                    guard let self = self, let transport = transport, self.transport === transport else { return }
+                    self.handleDisconnect()
                 }
             }
-        } catch {
-            print("Failed to encode message: \(error)")
-        }
+        )
     }
 
-    private func receiveMessage() {
-        ws?.receive { [weak self] result in
-            guard let self = self else { return }
+    private func closeSocket() {
+        let transport = self.transport
+        self.transport = nil
+        _socketId = nil
+        transport?.close()
+    }
 
-            switch result {
-            case .success(let wsMessage):
-                switch wsMessage {
-                case .string(let text):
-                    if let data = text.data(using: .utf8),
-                       let message = try? JSONDecoder().decode(Message.self, from: data) {
-                        self.handleMessage(message)
-                    }
-                case .data(let data):
-                    if let message = try? JSONDecoder().decode(Message.self, from: data) {
-                        self.handleMessage(message)
-                    }
-                @unknown default:
-                    break
-                }
+    private func write(_ message: Message) {
+        guard let data = try? JSONEncoder().encode(message),
+              let text = String(data: data, encoding: .utf8) else { return }
+        transport?.send(text)
+    }
 
-                // Continue receiving
-                self.receiveMessage()
-
-            case .failure(let error):
-                print("WebSocket receive error: \(error)")
-                self.handleDisconnect()
-            }
+    private func handleText(_ text: String) {
+        guard let data = text.data(using: .utf8),
+              let message = try? JSONDecoder().decode(Message.self, from: data) else {
+            return // Ignore malformed messages
         }
+        // Any traffic from the server proves the connection is alive.
+        resetActivityTimer()
+        handleMessage(message)
     }
 
     private func handleMessage(_ message: Message) {
         switch message.event {
         case "realtime:connection_established":
-            if let data = message.data.data(using: .utf8),
-               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
-                self.socketId = json["socket_id"] as? String
-
-                if let timeoutSeconds = json["activity_timeout"] as? TimeInterval {
-                    resetActivityTimer(timeout: timeoutSeconds)
-                } else {
-                    resetActivityTimer(timeout: options.activityTimeout)
-                }
-
-                reconnectAttempts = 0
-                setState(.connected)
+            guard let data = message.data.data(using: .utf8),
+                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                break
             }
-
-        case "realtime:pong":
-            // Reset pong timer
-            pongTimer?.invalidate()
-            pongTimer = nil
+            _socketId = json["socket_id"] as? String
+            activityTimeout = positive(options.activityTimeout)
+                ?? positive(json["activity_timeout"] as? TimeInterval)
+                ?? Connection.defaultActivityTimeout
+            reconnectAttempts = 0
+            setState(.connected)
+            resetActivityTimer()
 
         case "realtime:error":
             if let data = message.data.data(using: .utf8),
                let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-               let code = json["code"] as? Int {
-                // Fatal errors: 4000-4004
-                if code >= 4000 && code <= 4004 {
-                    disconnect()
-                    return
-                }
+               let code = json["code"] as? Int,
+               code >= 4000 && code <= 4004 {
+                // Fatal error, don't reconnect
+                disconnect()
+                return
             }
 
         default:
             break
         }
 
-        // Forward all messages to callback
         onMessage?(message)
     }
 
     private func handleDisconnect() {
         clearTimers()
-        ws = nil
-        socketId = nil
+        closeSocket()
+
+        if _state == .disconnected { return }
 
         guard options.enableReconnect && reconnectAttempts < options.maxReconnectAttempts else {
             setState(.unavailable)
             return
         }
 
-        setState(.disconnected)
-
-        // Exponential backoff: min(1000 * 2^attempt, 30000) ms
-        let delay = min(1.0 * pow(2.0, Double(reconnectAttempts)), 30.0)
+        setState(.connecting)
+        let backoff = min(reconnectBaseDelay * pow(2.0, Double(reconnectAttempts)), Connection.maxReconnectDelay)
+        // Jitter (50–100% of the backoff) so clients dropped together by a server
+        // restart don't all reconnect in the same instant.
+        let delay = backoff * Double.random(in: 0.5...1.0)
         reconnectAttempts += 1
 
-        reconnectTimer = Timer.scheduledTimer(withTimeInterval: delay, repeats: false) { [weak self] _ in
-            self?.connect()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self = self else { return }
+            self.reconnectTimer = nil
+            self.openSocket()
         }
+        reconnectTimer = work
+        queue.asyncAfter(deadline: .now() + delay, execute: work)
     }
 
-    private func resetActivityTimer(timeout: TimeInterval) {
-        activityTimer?.invalidate()
+    /// (Re)starts the idle timer. When it fires the client pings and waits up to
+    /// `pongTimeout` for any server message before dropping the socket.
+    private func resetActivityTimer() {
+        guard _state == .connected || _state == .connecting else { return }
+        activityTimer?.cancel()
+        pongTimer?.cancel()
+        pongTimer = nil
 
-        activityTimer = Timer.scheduledTimer(withTimeInterval: timeout, repeats: false) { [weak self] _ in
+        let work = DispatchWorkItem { [weak self] in
             guard let self = self else { return }
+            self.activityTimer = nil
+            self.write(Message(event: "realtime:ping", channel: nil, data: "{}"))
 
-            // Send ping
-            let pingMessage = Message(event: "realtime:ping", channel: nil, data: "{}")
-            self.send(pingMessage)
-
-            // Set pong timeout (30 seconds)
-            self.pongTimer = Timer.scheduledTimer(withTimeInterval: 30.0, repeats: false) { [weak self] _ in
+            let pong = DispatchWorkItem { [weak self] in
                 guard let self = self else { return }
-                // No pong received, close connection
-                self.ws?.cancel(with: .goingAway, reason: nil)
+                self.pongTimer = nil
+                // No reply: drop the socket and reconnect now rather than wait
+                // for a dead network to report the close.
                 self.handleDisconnect()
             }
+            self.pongTimer = pong
+            let pongTimeout = positive(self.options.pongTimeout) ?? 30
+            self.queue.asyncAfter(deadline: .now() + pongTimeout, execute: pong)
         }
+        activityTimer = work
+        queue.asyncAfter(deadline: .now() + activityTimeout, execute: work)
     }
 
     private func resolveWSHost() -> String {
@@ -200,38 +241,25 @@ public class Connection: NSObject {
     }
 
     private func setState(_ newState: ConnectionState) {
-        let prev = state
-        state = newState
+        let prev = _state
+        _state = newState
         if prev != newState {
             onStateChange?(prev, newState)
         }
     }
 
     private func clearTimers() {
-        reconnectTimer?.invalidate()
+        reconnectTimer?.cancel()
         reconnectTimer = nil
-        activityTimer?.invalidate()
+        activityTimer?.cancel()
         activityTimer = nil
-        pongTimer?.invalidate()
+        pongTimer?.cancel()
         pongTimer = nil
     }
 }
 
-extension Connection: URLSessionWebSocketDelegate {
-    public func urlSession(
-        _ session: URLSession,
-        webSocketTask: URLSessionWebSocketTask,
-        didOpenWithProtocol protocol: String?
-    ) {
-        // Connection opened, waiting for connection_established message
-    }
-
-    public func urlSession(
-        _ session: URLSession,
-        webSocketTask: URLSessionWebSocketTask,
-        didCloseWith closeCode: URLSessionWebSocketTask.CloseCode,
-        reason: Data?
-    ) {
-        handleDisconnect()
-    }
+/// Returns `value` if it is a positive finite number, otherwise nil.
+private func positive(_ value: TimeInterval?) -> TimeInterval? {
+    guard let value = value, value.isFinite, value > 0 else { return nil }
+    return value
 }

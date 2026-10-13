@@ -20,9 +20,10 @@ Apinator(appKey: String, cluster: String, configure: (inout RealtimeOptions) -> 
 | `cluster` | `String` | Yes | — | Region cluster ID (`eu`, `us`). Derives WebSocket URL as `wss://ws-{cluster}.apinator.io` |
 | `authEndpoint` | `String?` | No | `nil` | URL for private/presence channel authentication |
 | `authHeaders` | `[String: String]?` | No | `nil` | Custom headers sent with auth requests |
-| `activityTimeout` | `TimeInterval` | No | `120` | Seconds before sending a ping |
+| `activityTimeout` | `TimeInterval?` | No | `nil` (server value, 120) | Seconds without any server message before sending a ping |
+| `pongTimeout` | `TimeInterval` | No | `30` | Seconds to wait for a reply to that ping before reconnecting |
 | `enableReconnect` | `Bool` | No | `true` | Whether to auto-reconnect on disconnect |
-| `maxReconnectAttempts` | `Int` | No | `6` | Maximum reconnection attempts before giving up |
+| `maxReconnectAttempts` | `Int` | No | `.max` (unlimited) | Consecutive failed reconnects before going `unavailable` |
 
 ### Methods
 
