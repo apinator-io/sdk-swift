@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.2.0](https://github.com/apinator-io/sdk-swift/compare/v1.1.0...v1.2.0) (2026-10-14)
+
+
+### Features
+
+* stop on refused connections and show why; check appKey and cluster ([d90c508](https://github.com/apinator-io/sdk-swift/commit/d90c5085a46e5b83e7815085e13598d32a7029ba))
+
 ## [1.1.0](https://github.com/apinator-io/sdk-swift/compare/v1.0.0...v1.1.0) (2026-10-13)
 
 
