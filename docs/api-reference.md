@@ -74,6 +74,21 @@ Current connection state: `.initialized`, `.connecting`, `.connected`, `.unavail
 
 ---
 
+
+### Connection errors
+
+`connect()` does nothing and the state becomes `.unavailable` if `appKey` or `cluster` is empty, `"undefined"` or `"null"`; the reason is printed. A missing cluster would otherwise retry an unreachable host forever.
+
+When the server refuses a connection for a reason retrying cannot fix, it sends `realtime:error` with a code in **4000–4099** and a message saying what to change. The client prints the message, delivers the event to `bind("realtime:error")`, and moves to `.disconnected` without reconnecting.
+
+| Code | Meaning |
+|------|---------|
+| 4001 | App key invalid: not set, an app ID instead of a key, a placeholder, or revoked. The message says which. |
+| 4003 | App disabled |
+| 4010 | Wrong cluster; the message names the right one |
+
+Other close codes (e.g. 4200 server restart, network drops) reconnect automatically.
+
 ## Channel
 
 Represents a subscription to a channel.

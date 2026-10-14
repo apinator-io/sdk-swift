@@ -95,10 +95,10 @@ final class MockTransport: WebSocketTransport {
     private(set) var sent: [String] = []
     private(set) var closed = false
     private var onText: ((String) -> Void)?
-    private var onClose: (() -> Void)?
+    private var onClose: ((Int?) -> Void)?
     private let lock = NSLock()
 
-    func start(onText: @escaping (String) -> Void, onClose: @escaping () -> Void) {
+    func start(onText: @escaping (String) -> Void, onClose: @escaping (Int?) -> Void) {
         self.onText = onText
         self.onClose = onClose
     }
@@ -132,8 +132,8 @@ final class MockTransport: WebSocketTransport {
     }
 
     /// Simulates the server or network closing the socket.
-    func drop() {
-        onClose?()
+    func drop(code: Int? = nil) {
+        onClose?(code)
     }
 }
 
@@ -307,6 +307,62 @@ final class ConnectionLifecycleTests: XCTestCase {
             waitUntil(timeout: 10) { self.transportCount == i + 1 }
         }
         XCTAssertEqual(connection.state, .connecting)
+    }
+
+    func testFatalErrorStopsAndReachesTheApp() {
+        var received: [String] = []
+        let lock = NSLock()
+        let connection = Connection(
+            options: RealtimeOptions(appKey: "k", cluster: "eu"),
+            onMessage: { msg in lock.lock(); received.append(msg.event); lock.unlock() },
+            onStateChange: { _, _ in },
+            makeTransport: { [weak self] _ in
+                let t = MockTransport()
+                self?.lock.lock(); self?.transports.append(t); self?.lock.unlock()
+                return t
+            }
+        )
+        connection.reconnectBaseDelay = 0.05
+        connection.connect()
+        lastTransport.established()
+        waitUntil { connection.state == .connected }
+
+        lastTransport.receive(event: "realtime:error", data: "{\"code\":4010,\"message\":\"wrong cluster\"}")
+        waitUntil { connection.state == .disconnected }
+        lock.lock(); XCTAssertTrue(received.contains("realtime:error")); lock.unlock()
+        Thread.sleep(forTimeInterval: 0.3)
+        XCTAssertEqual(transportCount, 1, "a fatal error must not reconnect")
+    }
+
+    func testFatalCloseCodeDoesNotReconnect() {
+        let connection = makeConnection(RealtimeOptions(appKey: "k", cluster: "eu"))
+        connection.connect()
+        lastTransport.drop(code: 4001)
+
+        waitUntil { connection.state == .disconnected }
+        Thread.sleep(forTimeInterval: 0.3)
+        XCTAssertEqual(transportCount, 1)
+    }
+
+    func testServerRestartCloseCodeReconnects() {
+        let connection = connected(RealtimeOptions(appKey: "k", cluster: "eu"))
+        lastTransport.drop(code: 4200)
+        waitUntil { self.transportCount == 2 }
+        XCTAssertEqual(connection.state, .connecting)
+    }
+
+    func testMissingAppKeyOrClusterNeverConnects() {
+        for options in [RealtimeOptions(appKey: "", cluster: "eu"),
+                        RealtimeOptions(appKey: "undefined", cluster: "eu"),
+                        RealtimeOptions(appKey: "app_x", cluster: "")] {
+            transports = []
+            let connection = makeConnection(options)
+            connection.connect()
+            XCTAssertEqual(connection.state, .unavailable)
+            XCTAssertEqual(transportCount, 0)
+        }
+        XCTAssertNotNil(optionsProblem(RealtimeOptions(appKey: "null", cluster: "eu")))
+        XCTAssertNil(optionsProblem(RealtimeOptions(appKey: "app_x", cluster: "us")))
     }
 
     func testResubscribeFromStateCallbackDoesNotDeadlock() {

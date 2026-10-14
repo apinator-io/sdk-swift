@@ -98,6 +98,13 @@ public class Connection: NSObject {
         reconnectTimer?.cancel()
         reconnectTimer = nil
 
+        if let problem = optionsProblem(options) {
+            // Can never connect; a missing cluster would retry an unreachable host forever.
+            print("[apinator] \(problem)")
+            setState(.unavailable)
+            return
+        }
+
         let host = resolveWSHost()
         guard let url = URL(string: "\(host)/app/\(options.appKey)?protocol=7&client=swift&version=1.0.0") else {
             setState(.unavailable)
@@ -117,9 +124,15 @@ public class Connection: NSObject {
                     self.handleText(text)
                 }
             },
-            onClose: { [weak self, weak transport] in
+            onClose: { [weak self, weak transport] code in
                 self?.queue.async {
                     guard let self = self, let transport = transport, self.transport === transport else { return }
+                    if let code = code, isFatalCode(code) {
+                        // Refused for good (invalid key, app disabled, wrong cluster);
+                        // reconnecting would fail the same way forever.
+                        self.disconnect()
+                        return
+                    }
                     self.handleDisconnect()
                 }
             }
@@ -168,8 +181,11 @@ public class Connection: NSObject {
             if let data = message.data.data(using: .utf8),
                let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                let code = json["code"] as? Int,
-               code >= 4000 && code <= 4004 {
-                // Fatal error, don't reconnect
+               isFatalCode(code) {
+                // The server says why (e.g. an app ID used as the key, or the wrong
+                // cluster). Surface it, let the app see it, then stop for good.
+                print("[apinator] \(json["message"] as? String ?? "connection refused") (code \(code))")
+                onMessage?(message)
                 disconnect()
                 return
             }
@@ -256,6 +272,24 @@ public class Connection: NSObject {
         pongTimer?.cancel()
         pongTimer = nil
     }
+}
+
+/// Codes 4000-4099 mean the server refused the connection for a reason retrying
+/// cannot fix (invalid app key, app disabled, wrong cluster).
+func isFatalCode(_ code: Int) -> Bool {
+    return code >= 4000 && code < 4100
+}
+
+/// Describes options that can never connect, or nil if they look usable.
+func optionsProblem(_ options: RealtimeOptions) -> String? {
+    let unset: (String) -> Bool = { ["", "undefined", "null"].contains($0.trimmingCharacters(in: .whitespaces)) }
+    if unset(options.appKey) {
+        return "appKey is \"\(options.appKey)\". Pass the app key from your app's API keys in the console (it starts with \"app_\")."
+    }
+    if unset(options.cluster) {
+        return "cluster is \"\(options.cluster)\". Set it to the region your app was created in, e.g. \"eu\" or \"us\"."
+    }
+    return nil
 }
 
 /// Returns `value` if it is a positive finite number, otherwise nil.
