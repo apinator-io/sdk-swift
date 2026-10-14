@@ -1,5 +1,24 @@
 # Changelog
 
+## [1.2.0](https://github.com/apinator-io/sdk-swift/compare/v1.1.0...v1.2.0) (2026-10-14)
+
+
+### ⚠ Behaviour change
+
+* `connect()` now refuses an `appKey` or `cluster` that is empty, `"undefined"` or `"null"`. It prints the reason and moves to `.unavailable` instead of retrying an unreachable host forever [d90c508](https://github.com/apinator-io/sdk-swift/commit/d90c5085a46e5b83e7815085e13598d32a7029ba)
+
+
+### Bug Fixes
+
+* **errors:** a connection refused for a reason retrying cannot fix (any `realtime:error` or close code 4000–4099: invalid app key, app disabled, wrong cluster) now stops the client instead of reconnecting forever. Previously only 4000–4004 did [d90c508](https://github.com/apinator-io/sdk-swift/commit/d90c5085a46e5b83e7815085e13598d32a7029ba)
+* **errors:** fatal errors now reach `bind("realtime:error")`; they were dropped before the app could see them [d90c508](https://github.com/apinator-io/sdk-swift/commit/d90c5085a46e5b83e7815085e13598d32a7029ba)
+* **transport:** the server's close code is now passed to the connection, so a fatal close without an error message also stops reconnecting, while 4200 (server restart) still reconnects [d90c508](https://github.com/apinator-io/sdk-swift/commit/d90c5085a46e5b83e7815085e13598d32a7029ba)
+
+
+### Features
+
+* the server's explanation is printed as `[apinator] <message> (code N)`. With the current server it names the likely mistake: an app ID used as the key, a placeholder from an example, a revoked key, or the cluster to use [d90c508](https://github.com/apinator-io/sdk-swift/commit/d90c5085a46e5b83e7815085e13598d32a7029ba)
+
 ## [1.1.0](https://github.com/apinator-io/sdk-swift/compare/v1.0.0...v1.1.0) (2026-10-13)
 
 
