@@ -5,8 +5,9 @@ import Foundation
 /// to support reopening.
 protocol WebSocketTransport: AnyObject {
     /// Opens the socket. `onText` is called for every text frame and `onClose`
-    /// exactly once when the socket closes or fails, on any thread.
-    func start(onText: @escaping (String) -> Void, onClose: @escaping () -> Void)
+    /// exactly once when the socket closes or fails, on any thread, with the
+    /// server's close code when there was one.
+    func start(onText: @escaping (String) -> Void, onClose: @escaping (Int?) -> Void)
     func send(_ text: String)
     /// Closes the socket and releases its resources. Does not call `onClose`.
     func close()
@@ -19,7 +20,7 @@ final class URLSessionTransport: NSObject, WebSocketTransport, URLSessionWebSock
     private var session: URLSession?
     private var task: URLSessionWebSocketTask?
     private var onText: ((String) -> Void)?
-    private var onClose: (() -> Void)?
+    private var onClose: ((Int?) -> Void)?
     private let lock = NSLock()
     private var finished = false
 
@@ -27,7 +28,7 @@ final class URLSessionTransport: NSObject, WebSocketTransport, URLSessionWebSock
         self.url = url
     }
 
-    func start(onText: @escaping (String) -> Void, onClose: @escaping () -> Void) {
+    func start(onText: @escaping (String) -> Void, onClose: @escaping (Int?) -> Void) {
         let session = URLSession(configuration: .default, delegate: self, delegateQueue: nil)
         let task = session.webSocketTask(with: url)
         lock.lock()
@@ -73,7 +74,8 @@ final class URLSessionTransport: NSObject, WebSocketTransport, URLSessionWebSock
             case .success:
                 self.receive(task)
             case .failure:
-                self.fail()
+                let code = task.closeCode.rawValue
+                self.fail(code: code == 0 ? nil : code)
             }
         }
     }
@@ -84,7 +86,7 @@ final class URLSessionTransport: NSObject, WebSocketTransport, URLSessionWebSock
         didCloseWith closeCode: URLSessionWebSocketTask.CloseCode,
         reason: Data?
     ) {
-        fail()
+        fail(code: closeCode.rawValue)
     }
 
     private func deliver(_ text: String) {
@@ -94,15 +96,15 @@ final class URLSessionTransport: NSObject, WebSocketTransport, URLSessionWebSock
         onText?(text)
     }
 
-    private func fail() {
+    private func fail(code: Int?) {
         guard let (session, onClose) = finish() else { return }
         session?.invalidateAndCancel()
-        onClose?()
+        onClose?(code)
     }
 
     /// Marks the transport finished and hands back what needs tearing down.
     /// Returns nil if it already finished, so teardown happens exactly once.
-    private func finish() -> (URLSession?, (() -> Void)?)? {
+    private func finish() -> (URLSession?, ((Int?) -> Void)?)? {
         lock.lock()
         defer { lock.unlock() }
         if finished { return nil }
