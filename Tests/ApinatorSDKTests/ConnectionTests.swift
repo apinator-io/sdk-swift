@@ -198,6 +198,42 @@ final class ConnectionLifecycleTests: XCTestCase {
         return connection
     }
 
+    func testConnectURLCarriesSDKVersion() {
+        var url: URL?
+        let connection = Connection(
+            options: RealtimeOptions(appKey: "k", cluster: "eu"),
+            onMessage: { _ in },
+            onStateChange: { _, _ in },
+            makeTransport: { requested in
+                url = requested
+                return MockTransport()
+            }
+        )
+        connection.connect()
+
+        XCTAssertEqual(
+            url?.absoluteString,
+            "wss://ws-eu.apinator.io/app/k?protocol=7&client=swift&version=\(SDKInfo.version)"
+        )
+        connection.disconnect()
+    }
+
+    /// SDKInfo.version is rewritten by release-please; this catches it drifting from the
+    /// release actually recorded in CHANGELOG.md (the bug it replaced was a hard-coded
+    /// "1.0.0" that was never updated).
+    func testSDKVersionMatchesLatestChangelogRelease() throws {
+        let changelog = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("CHANGELOG.md")
+        let text = try String(contentsOf: changelog, encoding: .utf8)
+        let heading = try XCTUnwrap(
+            text.split(separator: "\n").first { $0.hasPrefix("## [") },
+            "no release heading in CHANGELOG.md"
+        )
+        let latest = heading.dropFirst(4).prefix { $0 != "]" }
+        XCTAssertEqual(SDKInfo.version, String(latest))
+    }
+
     func testReconnectsAfterDrop() {
         let connection = connected(RealtimeOptions(appKey: "k", cluster: "eu"))
         lastTransport.drop()
