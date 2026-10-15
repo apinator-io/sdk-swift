@@ -106,7 +106,7 @@ public class Connection: NSObject {
         }
 
         let host = resolveWSHost()
-        guard let url = URL(string: "\(host)/app/\(options.appKey)?protocol=7&client=swift&version=1.0.0") else {
+        guard let url = URL(string: "\(host)/app/\(options.appKey)?protocol=7&client=swift&version=\(SDKInfo.version)") else {
             setState(.unavailable)
             return
         }

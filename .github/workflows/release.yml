@@ -12,6 +12,7 @@ jobs:
   release-please:
     runs-on: ubuntu-latest
     steps:
+      # Config lives in release-please-config.json and .release-please-manifest.json.
+      # The manifest form is what allows `extra-files`, which keeps SDKInfo.version
+      # (sent as ?version= on connect) in step with each release.
       - uses: googleapis/release-please-action@v4
-        with:
-          release-type: simple
