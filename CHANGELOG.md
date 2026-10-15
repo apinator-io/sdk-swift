@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.2.1](https://github.com/apinator-io/sdk-swift/compare/v1.2.0...v1.2.1) (2026-10-15)
+
+
+### Bug Fixes
+
+* report the real SDK version when connecting ([#6](https://github.com/apinator-io/sdk-swift/issues/6)) ([d5d9a21](https://github.com/apinator-io/sdk-swift/commit/d5d9a21f6818a3210eebdcc0cfab60421c54fe11))
+
 ## [1.2.0](https://github.com/apinator-io/sdk-swift/compare/v1.1.0...v1.2.0) (2026-10-14)
 
 
