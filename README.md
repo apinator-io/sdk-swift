@@ -8,7 +8,7 @@ Swift client SDK for [Apinator](https://apinator.io) — real-time WebSocket mes
 
 ## Features
 
-- Public, private, and presence channels
+- Public, private, presence, and cache channels
 - Automatic reconnection with exponential backoff
 - Client events on private/presence channels
 - Presence member tracking
@@ -90,6 +90,20 @@ presence.bind("realtime:member_removed") { data in
     print("Left: \(data)")
 }
 ```
+
+### Cache Channels
+
+A channel named `cache-`, `private-cache-` or `presence-cache-` keeps its last event for
+30 minutes. A client that subscribes late gets it right after `realtime:subscription_succeeded`,
+so bind your handlers straight after `subscribe()`.
+
+```swift
+let job = client.subscribe("private-cache-job-\(jobId)")
+job.bind("job-finished") { data in /* runs even if the job finished before you subscribed */ }
+```
+
+If nothing is cached (or it has expired) no event arrives, so keep a fallback such as a status
+API call.
 
 ## Client Events
 
